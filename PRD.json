@@ -1,0 +1,232 @@
+{
+  "project": "cursed-order-workflow",
+  "description": "A single TypeScript Temporal workflow (order processing) deliberately riddled with anti-patterns in retry policies, timeouts, determinism, history management, and error handling. Intended as a teaching/demo artifact of what NOT to do. Connects to Temporal Cloud via namespace, endpoint, and API key or mTLS from environment variables.",
+  "language": "typescript",
+  "rules": [
+    "Every anti-pattern must be marked with a comment of the form // BAD IDEA: <short explanation of why it is bad>",
+    "Each story is implemented independently and must leave the project compiling with npm run build",
+    "Do not fix or soften any anti-pattern, even if it looks like a mistake",
+    "README must not contain a project-structure or file-tree section",
+    "Do not use Math.random or Date.now to demonstrate non-determinism; the TypeScript workflow sandbox makes them deterministic"
+  ],
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Scaffold TypeScript Temporal project for Temporal Cloud",
+      "description": "Create package.json, tsconfig, and dependencies for @temporalio/client, worker, workflow, and activity. Add a config module that reads namespace, address, and API key from environment variables to connect to Temporal Cloud.",
+      "acceptanceCriteria": [
+        "npm install and npm run build succeed",
+        "Config reads TEMPORAL_ADDRESS, TEMPORAL_NAMESPACE, and TEMPORAL_API_KEY from env",
+        "No local dev server or self-hosted configuration is included"
+      ],
+      "priority": 1,
+      "passes": true
+    },
+    {
+      "id": "US-002",
+      "title": "Create worker, client starter, and empty OrderWorkflow",
+      "description": "Add a worker entrypoint, a client script that starts OrderWorkflow, and a skeleton workflow that calls placeholder activities: validateOrder, chargeCard, reserveInventory, shipOrder.",
+      "acceptanceCriteria": [
+        "Worker starts and polls a task queue named cursed-orders",
+        "Starter script starts the workflow with a sample order",
+        "Builds cleanly"
+      ],
+      "priority": 2,
+      "passes": true
+    },
+    {
+      "id": "US-003",
+      "title": "BAD IDEA: start-to-close timeout shorter than activity duration",
+      "description": "Make shipOrder sleep about 10 seconds but configure startToCloseTimeout at 2 seconds so it always times out before completing.",
+      "acceptanceCriteria": [
+        "shipOrder deliberately takes longer than its startToCloseTimeout",
+        "Marked with a BAD IDEA comment"
+      ],
+      "priority": 3,
+      "passes": true
+    },
+    {
+      "id": "US-004",
+      "title": "BAD IDEA: unlimited retries with no backoff",
+      "description": "Set shipOrder retry policy to maximumAttempts 0 (unlimited), backoffCoefficient 1, and initialInterval of 100ms so it hammers forever.",
+      "acceptanceCriteria": [
+        "Retry policy has unlimited attempts, coefficient 1, tiny initial interval",
+        "Marked with a BAD IDEA comment"
+      ],
+      "priority": 4,
+      "passes": true
+    },
+    {
+      "id": "US-005",
+      "title": "BAD IDEA: schedule-to-close shorter than start-to-close",
+      "description": "On reserveInventory, set scheduleToCloseTimeout below startToCloseTimeout so retries can never fit in the window.",
+      "acceptanceCriteria": [
+        "scheduleToCloseTimeout is smaller than startToCloseTimeout",
+        "Marked with a BAD IDEA comment"
+      ],
+      "priority": 5,
+      "passes": true
+    },
+    {
+      "id": "US-006",
+      "title": "BAD IDEA: tight heartbeat timeout on a non-heartbeating long activity",
+      "description": "Add a long-running activity generateInvoicePdf that runs about 30 seconds, set heartbeatTimeout to 3 seconds, and never call heartbeat.",
+      "acceptanceCriteria": [
+        "Activity never heartbeats",
+        "heartbeatTimeout is far shorter than runtime",
+        "Marked with a BAD IDEA comment"
+      ],
+      "priority": 6,
+      "passes": true
+    },
+    {
+      "id": "US-007",
+      "title": "BAD IDEA: non-determinism via mutable module-level state",
+      "description": "Declare a module-level counter outside the workflow function and increment it on each workflow task. Use its value to decide whether to call an extra activity (for example, notifyWarehouse) before chargeCard, so the command sequence differs between original execution and replay. Do NOT use Math.random or Date.now, because the TypeScript workflow sandbox makes those deterministic.",
+      "acceptanceCriteria": [
+        "Module-level mutable state influences which commands the workflow issues",
+        "Math.random and Date.now are not used for this story",
+        "A replay test using the SDK's Worker.runReplayHistory (or runReplayHistories) against a captured history confirms a non-determinism error is actually produced; if it is not, adjust the approach until it is",
+        "Marked with a BAD IDEA comment explaining the replay failure"
+      ],
+      "priority": 7,
+      "passes": true
+    },
+    {
+      "id": "US-008",
+      "title": "BAD IDEA: network and environment access inside workflow code",
+      "description": "Attempt a fetch call and read process.env inside workflow code to branch behavior. Keep the code present even if the sandbox rejects it, and document the failure mode in the comment.",
+      "acceptanceCriteria": [
+        "Workflow code contains a fetch and a process.env branch",
+        "Marked with a BAD IDEA comment"
+      ],
+      "priority": 8,
+      "passes": true
+    },
+    {
+      "id": "US-009",
+      "title": "BAD IDEA: huge payload passed between activities",
+      "description": "Have an activity return a multi-megabyte base64 blob (a fake product catalog) and pass it into the next activity as an argument.",
+      "acceptanceCriteria": [
+        "Payload is large enough to approach Temporal payload limits",
+        "Marked with a BAD IDEA comment"
+      ],
+      "priority": 9,
+      "passes": true
+    },
+    {
+      "id": "US-010",
+      "title": "BAD IDEA: unbounded history with no continue-as-new",
+      "description": "Add an order-status polling loop that runs forever, sleeping briefly and calling an activity each iteration, never calling continueAsNew.",
+      "acceptanceCriteria": [
+        "Loop has no exit condition or continueAsNew",
+        "Marked with a BAD IDEA comment"
+      ],
+      "priority": 10,
+      "passes": true
+    },
+    {
+      "id": "US-011",
+      "title": "BAD IDEA: massive unthrottled child workflow fan-out",
+      "description": "Add a notifyCustomers step that starts 10,000 child workflows at once via Promise.all with no batching.",
+      "acceptanceCriteria": [
+        "10,000 children started in one Promise.all",
+        "Marked with a BAD IDEA comment"
+      ],
+      "priority": 11,
+      "passes": true
+    },
+    {
+      "id": "US-012",
+      "title": "BAD IDEA: everything is retryable, including validation errors",
+      "description": "Make validateOrder throw plain Errors for permanently invalid input, with an empty nonRetryableErrorTypes list, so it retries forever on bad data.",
+      "acceptanceCriteria": [
+        "Invalid order throws a retryable error",
+        "No non-retryable error types configured",
+        "Marked with a BAD IDEA comment"
+      ],
+      "priority": 12,
+      "passes": true
+    },
+    {
+      "id": "US-013",
+      "title": "BAD IDEA: swallowed errors in a catch block",
+      "description": "Wrap the inventory step in try/catch that ignores the error and continues as if it succeeded.",
+      "acceptanceCriteria": [
+        "Catch block swallows the error with no logging or rethrow",
+        "Marked with a BAD IDEA comment"
+      ],
+      "priority": 13,
+      "passes": true
+    },
+    {
+      "id": "US-014",
+      "title": "BAD IDEA: non-idempotent chargeCard with no idempotency key",
+      "description": "Implement chargeCard so each execution creates a new charge in an in-memory ledger, with no idempotency key, combined with aggressive retries and timeouts so duplicate charges are likely.",
+      "acceptanceCriteria": [
+        "No idempotency key is used",
+        "Retries can produce duplicate ledger entries",
+        "Marked with a BAD IDEA comment"
+      ],
+      "priority": 14,
+      "passes": true
+    },
+    {
+      "id": "US-015",
+      "title": "BAD IDEA: unbounded workflow execution timeout",
+      "description": "Start the workflow with no workflowExecutionTimeout or workflowRunTimeout so a stuck run lives forever.",
+      "acceptanceCriteria": [
+        "Starter sets no workflow-level timeouts",
+        "Marked with a BAD IDEA comment"
+      ],
+      "priority": 15,
+      "passes": true
+    },
+    {
+      "id": "US-016",
+      "title": "BAD IDEA: signal handler never registered",
+      "description": "Define a cancelOrder signal with defineSignal, but never call setHandler for it, so signals sent to the workflow are never processed.",
+      "acceptanceCriteria": [
+        "Signal is defined and documented but has no handler",
+        "Marked with a BAD IDEA comment"
+      ],
+      "priority": 16,
+      "passes": true
+    },
+    {
+      "id": "US-017",
+      "title": "BAD IDEA: saga with compensations that also fail",
+      "description": "Add a compensation stack (refundCard, releaseInventory) that runs on failure, where the compensation activities themselves throw and have no retry or error handling.",
+      "acceptanceCriteria": [
+        "Compensations can throw and are not guarded",
+        "Marked with a BAD IDEA comment"
+      ],
+      "priority": 17,
+      "passes": true
+    },
+    {
+      "id": "US-018",
+      "title": "BAD IDEA: code change that breaks replay",
+      "description": "Add a documented v2 branch that inserts an extra activity call before chargeCard without using patched() or versioning, plus a script that demonstrates replaying an old history against it.",
+      "acceptanceCriteria": [
+        "Unversioned change in command order is present",
+        "Replay demo script exists and is documented",
+        "Marked with a BAD IDEA comment"
+      ],
+      "priority": 18,
+      "passes": true
+    },
+    {
+      "id": "US-019",
+      "title": "Write README cataloging every bad idea",
+      "description": "Write a README that explains the purpose, how to run against Temporal Cloud, and a table listing each anti-pattern, where it lives, and the correct fix. No project-structure or file-tree section.",
+      "acceptanceCriteria": [
+        "README lists all anti-patterns from US-003 through US-018",
+        "README contains no project-structure or file-tree section",
+        "README covers Temporal Cloud setup only"
+      ],
+      "priority": 19,
+      "passes": true
+    }
+  ]
+}

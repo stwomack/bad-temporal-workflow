@@ -1,0 +1,28 @@
+{
+  "name": "cursed-order-workflow",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A Temporal order workflow built entirely out of anti-patterns. Do not copy.",
+  "scripts": {
+    "build": "tsc --build",
+    "clean": "rm -rf lib",
+    "worker": "node lib/worker.js",
+    "start-order": "node lib/starter.js",
+    "capture-history": "node lib/capture-history.js",
+    "replay:nondeterminism": "node lib/replay-nondeterminism.js",
+    "cancel-order": "node lib/cancel-order.js",
+    "replay:v1-history": "node lib/replay-nondeterminism.js histories/v1-order.json"
+  },
+  "dependencies": {
+    "@temporalio/activity": "^1.24.0",
+    "@temporalio/client": "^1.24.0",
+    "@temporalio/common": "^1.24.0",
+    "@temporalio/worker": "^1.24.0",
+    "@temporalio/workflow": "^1.24.0",
+    "protobufjs": "^8.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}

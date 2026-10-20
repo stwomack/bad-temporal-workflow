@@ -1,0 +1,132 @@
+# Ralph progress log
+
+PRD.json has no ralph_instructions field; working one story per iteration in priority order,
+verifying with npm run build, then flipping passes to true.
+
+## US-001 (done)
+- package.json, tsconfig.json, .gitignore, src/config.ts
+- @temporalio/* 1.24.0, TypeScript 5
+- config.ts reads TEMPORAL_ADDRESS, TEMPORAL_NAMESPACE, TEMPORAL_API_KEY (or TEMPORAL_TLS_CERT/KEY for mTLS)
+- TASK_QUEUE constant = cursed-orders
+- npm 11 skipped install scripts for protobufjs and @swc/core (allow-scripts). Build is fine; revisit if worker bundling fails.
+
+## US-002 (done)
+- src/activities.ts (Order type + validateOrder, chargeCard, reserveInventory, shipOrder placeholders)
+- src/workflows.ts (OrderWorkflow calls the four activities, sane 1 minute startToCloseTimeout for now)
+- src/worker.ts polls cursed-orders; src/starter.ts starts OrderWorkflow with a sample order
+- npm scripts: worker, start-order
+- Verified bundleWorkflowCode succeeds, so the skipped swc postinstall is not a problem
+- No Cloud credentials available locally, so worker/starter were not run against a live namespace
+
+## US-003 (done)
+- shipOrder sleeps 10s in activities.ts; workflows.ts gives it a dedicated proxy with startToCloseTimeout 2s
+- BAD IDEA comments on both sides
+- Pattern for later stories: per-activity anti-pattern configs get their own proxyActivities block
+
+## US-004 (done)
+- shipOrder proxy retry: maximumAttempts Infinity (TS SDK rejects 0; Infinity becomes server-side 0 = unlimited), backoffCoefficient 1, initialInterval 100ms
+
+## US-005 (done)
+- reserveInventory has its own proxy: startToCloseTimeout 30s, scheduleToCloseTimeout 5s
+- SDK only requires one of the two to be set; no validation of their relationship
+
+## US-006 (done)
+- generateInvoicePdf activity sleeps 30s, never heartbeats; proxy has heartbeatTimeout 3s, startToClose 1m
+- Called in OrderWorkflow between reserveInventory and shipOrder
+
+## US-007 (done)
+- Finding: module-level variables are isolated per workflow execution in the TS sandbox (verified: 3 runs on one
+  worker each saw counter=1), so a counter bumped only in the workflow body replays identically. No NDE.
+- Approach that works: module-level workflowTasksSeen incremented by a workflow internals interceptor on every
+  activation. Query-only activations bump it but never land in history, so a queried run takes the notifyWarehouse
+  branch originally and skips it on replay.
+- workflows.ts exports `interceptors` and `orderStatusQuery`; worker.ts registers interceptors.workflowModules.
+  Any replay worker must also register the interceptor module or the counter never moves.
+- OrderWorkflow now: validateOrder -> sleep 5s (query window) -> [notifyWarehouse if count > 3] -> chargeCard -> ...
+- src/capture-history.ts (Cloud): starts a run, queries 3x, saves history JSON. npm run capture-history [path]
+- src/replay-nondeterminism.ts: npm run replay:nondeterminism [path], exits 0 only on DeterminismViolationError
+- histories/queried-order.json captured from a throwaway dev server in the scratchpad (not part of the project).
+  Verified: TMPRL1100 "Activity type of scheduled event 'notifyWarehouse' does not match ... 'chargeCard'"
+- protobufjs ^8.8.1 is a direct dependency on purpose: without it grpc's protobufjs 7 hoists, the temporal packages
+  each get a private 8.x copy, and historyToJSON throws "type must be a Type". Do not remove.
+- Scratchpad harness for local capture: scratchpad/capture-local.js (dev server on localhost:7299)
+
+## US-008 (done)
+- pickCarrier() in workflows.ts calls fetch and branches on process.env.FORCE_OVERNIGHT; called after reserveInventory
+- Verified on local dev server: "ReferenceError: fetch is not defined", workflow task fails and retries forever,
+  run stalls after reserveInventory. Everything downstream (generateInvoicePdf, shipOrder) is now unreachable at
+  runtime; that is accepted since the PRD says keep the code even if the sandbox rejects it.
+- US-007 replay still produces TMPRL1100 (divergence happens before pickCarrier)
+- scratchpad/run-local.js <waitMs>: runs project worker locally, starts a run, prints history events
+
+## US-009 (done)
+- loadProductCatalog returns a 1,973,336 byte base64 string (1.88 MiB, just under the 2 MiB payload limit);
+  applyCatalogPricing takes it as an argument. Runs after reserveInventory, before pickCarrier.
+- Verified on local dev server: both activities complete; then the run stalls at pickCarrier (US-008) as expected
+
+## US-010 (done)
+- pollOrderStatus(order, trackingNumber): Promise<never>, for(;;) { sleep 2s; checkOrderStatus } with no continueAsNew
+- Called after shipOrder; OrderWorkflow's `return trackingNumber` is now unreachable by design
+- Not exercised at runtime: the run stalls at pickCarrier (US-008) and shipOrder can never succeed (US-003/004)
+
+## US-011 (done)
+- CustomerNotificationWorkflow child (calls sendCustomerEmail); notifyCustomers starts 10,000 via one Promise.all of
+  executeChild, called after shipOrder and before pollOrderStatus. Worker picks up the child from workflows.ts.
+- Verified with a scratchpad probe (probe/fan.js) on the dev server: workflow task fails with
+  "PendingChildWorkflowsLimitExceeded ... per-workflow limit of 2000", run stays RUNNING, zero children started
+
+## US-012 (done)
+- validateOrder throws plain Errors for empty items, quantity <= 0, amount <= 0
+- validateOrder has its own proxy with retry.nonRetryableErrorTypes: [] and default (unlimited) attempts
+- starter: `npm run start-order -- --invalid` sends an empty, zero-total order
+- Verified on dev server: attempt 6 after 20s, lastFailure "Order order-bad has no items", still retrying
+- scratchpad/run-local.js now takes a second arg "invalid" and prints pending activities
+
+## US-013 (done)
+- reserveInventory call in OrderWorkflow wrapped in try { } catch { } with an empty body (comment only)
+- No command change, so histories/queried-order.json replay is unaffected
+
+## US-014 (done)
+- activities.ts: exported in-memory `ledger`; chargeCard books a fresh chargeId every execution, no idempotency key,
+  then sleeps 1.5s on attempts 1-2 (after booking)
+- chargeCard has its own proxy: startToCloseTimeout 1s, retry 100ms flat, unlimited attempts
+- Verified on dev server: 3 ledger entries for one order (attempts 1, 2, 3), attempt 3 succeeds, workflow proceeds
+- US-007 replay still passes
+
+## US-015 (done)
+- starter.ts workflow.start passes no workflowExecutionTimeout / workflowRunTimeout; BAD IDEA comment above the call
+
+## US-016 (done)
+- workflows.ts exports cancelOrderSignal = defineSignal<[string]>('cancelOrder') with JSDoc; no setHandler anywhere
+- src/cancel-order.ts + `npm run cancel-order -- <workflowId> [reason]` sends it (Cloud)
+- Verified on dev server: WorkflowExecutionSignaled lands in history, run continues through chargeCard/reserveInventory
+- Side effect worth knowing: the signal's extra workflow task bumps workflowTasksSeen, so a signaled run also takes the
+  notifyWarehouse branch. That one is deterministic (the signal is in history), unlike queries.
+
+## US-017 (done)
+- Saga try/catch in OrderWorkflow covers chargeCard -> reserveInventory (still swallowed) -> loadProductCatalog ->
+  applyCatalogPricing. Ends before pickCarrier on purpose so US-008's ReferenceError still fails the workflow task
+  instead of being caught by the saga.
+- Compensation stack via unshift: releaseInventory runs first, then refundCard. Both activities always throw; their
+  proxy has maximumAttempts 1; the loop has no per-compensation guard.
+- Trigger: applyCatalogPricing throws ApplicationFailure.nonRetryable('DiscontinuedItem') for sku DISCONTINUED-ITEM;
+  `npm run start-order -- --discontinued`
+- Verified on dev server: releaseInventory scheduled, refundCard never scheduled, workflow FAILED with
+  "Inventory service unavailable..." and the original DiscontinuedItem error is lost
+
+## US-018 (done)
+- workflows.ts: ORDER_WORKFLOW_VERSION = 2 constant; `if (ORDER_WORKFLOW_VERSION >= 2) await runFraudCheck(order)`
+  right before chargeCard inside the saga try, no patched(), no worker versioning. runFraudCheck added to activities.
+- histories/v1-order.json: unqueried run captured with v1 code (before the change). Control: replays clean on v1 code.
+- histories/queried-order.json RECAPTURED under v2 so the US-007 replay isolates the module-state cause:
+    replay:nondeterminism -> 'notifyWarehouse' vs 'runFraudCheck'   (module state, US-007)
+    replay:v1-history     -> 'chargeCard' vs 'runFraudCheck'        (unversioned change, US-018)
+  Control: an unqueried v2 history replays clean on v2 code.
+- capture-history.ts: takes --no-query, documents how to recapture v1 history on Cloud
+- If OrderWorkflow command order before chargeCard changes again, recapture both fixtures.
+
+## US-019 (done)
+- README.md: purpose, Temporal Cloud env vars (API key or mTLS), run commands, replay demos, catalog table for
+  US-003..US-018 with location (file + symbol), failure, and fix. No file tree, no local server, no emdashes/emojis.
+
+All stories pass.
